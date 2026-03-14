@@ -1,8 +1,7 @@
 'use client'
 
-import { Suspense, useState, useCallback } from 'react'
+import { Suspense, useState, useCallback, useRef, useMemo } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
 import SolarSystem from './SolarSystem'
 import Leaderboard from './Leaderboard'
 import AsteroidPanel from './AsteroidPanel'
@@ -12,9 +11,51 @@ interface Props {
   asteroids: ProcessedAsteroid[]
 }
 
+const TIMELINE_MIN = -18
+const TIMELINE_MAX = 4
+// Movement threshold in px below which we consider it a click, not a drag
+const DRAG_THRESHOLD = 4
+
+function formatDatePill(asteroids: ProcessedAsteroid[], timelineOffset: number): string {
+  const sorted = [...asteroids].sort((a, b) =>
+    a.closeApproachDate.localeCompare(b.closeApproachDate)
+  )
+  const total = sorted.length
+
+  const inView = sorted.filter((asteroid, i) => {
+    const baseX = 2 + (i / Math.max(total - 1, 1)) * 20
+    const xJitter = (Math.sin(i * 127.1) * 0.5 + 0.5) * 2.4 - 1.2
+    const x = baseX + xJitter + timelineOffset
+    return x >= -2 && x <= 12
+  })
+
+  if (inView.length === 0) {
+    return `${total} objects tracked`
+  }
+
+  const dates = inView.map((a) => new Date(a.closeApproachDate))
+  const minDate = new Date(Math.min(...dates.map((d) => d.getTime())))
+  const maxDate = new Date(Math.max(...dates.map((d) => d.getTime())))
+
+  const fmt = (d: Date) =>
+    d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+  const range =
+    minDate.toDateString() === maxDate.toDateString()
+      ? fmt(minDate)
+      : `${fmt(minDate)} → ${fmt(maxDate)}`
+
+  return `${range} · ${inView.length} objects tracked`
+}
+
 export default function SceneCanvas({ asteroids }: Props) {
   const [selectedAsteroid, setSelectedAsteroid] = useState<ProcessedAsteroid | null>(null)
-  const [flyToId, setFlyToId] = useState<string | null>(null)
+  const [timelineOffset, setTimelineOffset] = useState(0)
+
+  const isDragging = useRef(false)
+  const hasDragged = useRef(false)
+  const dragStartX = useRef(0)
+  const offsetAtDragStart = useRef(0)
 
   const handleSelectAsteroid = useCallback((asteroid: ProcessedAsteroid) => {
     setSelectedAsteroid(asteroid)
@@ -22,43 +63,85 @@ export default function SceneCanvas({ asteroids }: Props) {
 
   const handleLeaderboardSelect = useCallback((asteroid: ProcessedAsteroid) => {
     setSelectedAsteroid(asteroid)
-    setFlyToId(asteroid.id)
   }, [])
 
   const handleClose = useCallback(() => {
     setSelectedAsteroid(null)
   }, [])
 
+  // Drag handlers on the wrapper div — these run in addition to Three.js events
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      isDragging.current = true
+      hasDragged.current = false
+      dragStartX.current = e.clientX
+      offsetAtDragStart.current = timelineOffset
+      ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    },
+    [timelineOffset]
+  )
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging.current) return
+    const dx = e.clientX - dragStartX.current
+    if (Math.abs(dx) > DRAG_THRESHOLD) {
+      hasDragged.current = true
+    }
+    // Drag left = time forward (asteroids shift left); drag right = backward
+    const raw = offsetAtDragStart.current - dx * 0.02
+    setTimelineOffset(Math.min(TIMELINE_MAX, Math.max(TIMELINE_MIN, raw)))
+  }, [])
+
+  const handlePointerUp = useCallback(() => {
+    isDragging.current = false
+  }, [])
+
+  // onPointerMissed fires on the Canvas when no 3D object was hit —
+  // only deselect if the user wasn't dragging
+  const handlePointerMissed = useCallback(() => {
+    if (!hasDragged.current) {
+      setSelectedAsteroid(null)
+    }
+    hasDragged.current = false
+  }, [])
+
+  const datePill = useMemo(
+    () => formatDatePill(asteroids, timelineOffset),
+    [asteroids, timelineOffset]
+  )
+
   return (
     <>
-      {/* Full-screen 3D canvas */}
-      <Canvas
-        camera={{ position: [0, 18, 28], fov: 55, near: 0.01, far: 500 }}
-        style={{ position: 'fixed', inset: 0 }}
-        gl={{ antialias: true, alpha: false }}
-        onPointerMissed={() => setSelectedAsteroid(null)}
+      {/* Drag wrapper: covers full screen, captures pointer for scrubbing */}
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          cursor: isDragging.current ? 'grabbing' : 'grab',
+          zIndex: 0,
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
-        <Suspense fallback={null}>
-          <SolarSystem
-            asteroids={asteroids}
-            selectedId={selectedAsteroid?.id ?? null}
-            onSelectAsteroid={handleSelectAsteroid}
-            flyToId={flyToId}
-            onFlyComplete={() => setFlyToId(null)}
-          />
-        </Suspense>
-        <OrbitControls
-          makeDefault
-          enablePan
-          enableZoom
-          enableRotate
-          minDistance={3}
-          maxDistance={80}
-          zoomSpeed={0.8}
-          rotateSpeed={0.5}
-          panSpeed={0.8}
-        />
-      </Canvas>
+        {/* Canvas sits inside the drag wrapper, inherits pointer events */}
+        <Canvas
+          camera={{ position: [0, 2, 20], fov: 55, near: 0.01, far: 500 }}
+          style={{ width: '100%', height: '100%' }}
+          gl={{ antialias: true, alpha: false }}
+          onPointerMissed={handlePointerMissed}
+        >
+          <Suspense fallback={null}>
+            <SolarSystem
+              asteroids={asteroids}
+              selectedId={selectedAsteroid?.id ?? null}
+              onSelectAsteroid={handleSelectAsteroid}
+              timelineOffset={timelineOffset}
+            />
+          </Suspense>
+        </Canvas>
+      </div>
 
       {/* Header overlay */}
       <div
@@ -82,6 +165,27 @@ export default function SceneCanvas({ asteroids }: Props) {
         <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
           Near-Earth Asteroid Economic Value Tracker · {asteroids.length} asteroids this week
         </span>
+      </div>
+
+      {/* Date pill HUD */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(0,0,0,0.5)',
+          borderRadius: 999,
+          padding: '6px 18px',
+          fontSize: 13,
+          color: '#ccc',
+          letterSpacing: '0.05em',
+          pointerEvents: 'none',
+          zIndex: 10,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {datePill}
       </div>
 
       {/* Leaderboard */}

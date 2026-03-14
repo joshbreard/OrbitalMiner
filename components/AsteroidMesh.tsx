@@ -20,22 +20,19 @@ interface Props {
   asteroid: ProcessedAsteroid
   isSelected: boolean
   onClick: () => void
+  position: [number, number, number]
 }
 
-export default function AsteroidMesh({ asteroid, isSelected, onClick }: Props) {
+export default function AsteroidMesh({ asteroid, isSelected, onClick, position }: Props) {
   const meshRef = useRef<THREE.Mesh>(null)
   const [hovered, setHovered] = useState(false)
 
-  const x = Math.cos(asteroid.orbitAngle) * asteroid.orbitRadius
-  const z = Math.sin(asteroid.orbitAngle) * asteroid.orbitRadius
-  const y = (Math.sin(asteroid.orbitAngle * 2.3) * asteroid.orbitRadius * 0.05)
-
-  // Visual radius: scale log of diameter to reasonable range
   const logMin = Math.log10(1)
   const logMax = Math.log10(10000)
   const logVal = Math.log10(Math.max(1, asteroid.avgDiameterM))
   const t = Math.min(1, Math.max(0, (logVal - logMin) / (logMax - logMin)))
   const visualRadius = MIN_VISUAL_RADIUS + t * (MAX_VISUAL_RADIUS - MIN_VISUAL_RADIUS)
+  const hitRadius = visualRadius * 2
 
   const color = TYPE_COLORS[asteroid.spectralType] ?? TYPE_COLORS.unknown
 
@@ -46,9 +43,9 @@ export default function AsteroidMesh({ asteroid, isSelected, onClick }: Props) {
   })
 
   return (
-    <group position={[x, y, z]}>
+    <group position={position}>
+      {/* Invisible hit sphere — generously sized for easy clicking */}
       <mesh
-        ref={meshRef}
         onClick={(e: ThreeEvent<MouseEvent>) => {
           e.stopPropagation()
           onClick()
@@ -63,7 +60,12 @@ export default function AsteroidMesh({ asteroid, isSelected, onClick }: Props) {
           document.body.style.cursor = 'auto'
         }}
       >
-        {/* Slightly irregular shape for asteroids */}
+        <sphereGeometry args={[hitRadius, 8, 8]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* Visual asteroid body — no pointer handlers */}
+      <mesh ref={meshRef}>
         <dodecahedronGeometry args={[visualRadius, 0]} />
         <meshStandardMaterial
           color={color}

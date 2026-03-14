@@ -1,174 +1,175 @@
 'use client'
 
 import { useRef, useMemo } from 'react'
-import { useFrame, useThree } from '@react-three/fiber'
-import { Stars, Html } from '@react-three/drei'
+import { useFrame } from '@react-three/fiber'
+import { Stars, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 import type { ProcessedAsteroid } from '@/lib/types'
 import AsteroidMesh from './AsteroidMesh'
+
+useGLTF.preload('/earth.glb')
+useGLTF.preload('/sun.glb')
+
+// Earth sphere params for collision avoidance
+const EARTH_CENTER: [number, number, number] = [-8, -4, 0]
+const EARTH_CLAMP_RADIUS = 6.8  // asteroids get pushed out if closer than this
+const EARTH_HIDE_RADIUS = 6.5   // asteroids behind Earth within this radius are hidden
 
 interface SolarSystemProps {
   asteroids: ProcessedAsteroid[]
   selectedId: string | null
   onSelectAsteroid: (asteroid: ProcessedAsteroid) => void
-  flyToId: string | null
-  onFlyComplete: () => void
+  timelineOffset: number
 }
 
-function Sun() {
-  const meshRef = useRef<THREE.Mesh>(null)
-  const glowRef = useRef<THREE.Mesh>(null)
+function SunModel() {
+  const { scene } = useGLTF('/sun.glb')
 
-  useFrame(({ clock }) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.y = clock.getElapsedTime() * 0.05
-    }
-    if (glowRef.current) {
-      const s = 1 + Math.sin(clock.getElapsedTime() * 0.8) * 0.02
-      glowRef.current.scale.setScalar(s)
+  const cloned = useMemo(() => {
+    const clone = scene.clone()
+    clone.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        mats.forEach((mat) => {
+          const m = mat as THREE.MeshStandardMaterial
+          m.emissive = new THREE.Color('#FF8800')
+          m.emissiveIntensity = 2.5
+          m.toneMapped = false
+        })
+      }
+    })
+    return clone
+  }, [scene])
+
+  return (
+    <primitive
+      object={cloned}
+      position={[30, 22, -20]}
+      scale={[0.08, 0.08, 0.08]}
+    />
+  )
+}
+
+function EarthModel() {
+  const { scene } = useGLTF('/earth.glb')
+  const groupRef = useRef<THREE.Group>(null)
+
+  const cloned = useMemo(() => {
+    const clone = scene.clone()
+    // Disable raycast on all Earth meshes so they never block asteroid clicks
+    clone.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        ;(obj as THREE.Mesh).raycast = () => {}
+      }
+    })
+    return clone
+  }, [scene])
+
+  useFrame(() => {
+    if (groupRef.current) {
+      groupRef.current.rotation.y += 0.0008
     }
   })
 
   return (
-    <group>
-      {/* Core */}
-      <mesh ref={meshRef}>
-        <sphereGeometry args={[1.8, 32, 32]} />
-        <meshStandardMaterial
-          color="#FDB813"
-          emissive="#FF6600"
-          emissiveIntensity={2}
-          roughness={0.8}
-        />
-      </mesh>
-      {/* Glow halo */}
-      <mesh ref={glowRef}>
-        <sphereGeometry args={[2.6, 32, 32]} />
-        <meshBasicMaterial
-          color="#FF8800"
-          transparent
-          opacity={0.08}
-          side={THREE.BackSide}
-        />
-      </mesh>
-      {/* Point light source */}
-      <pointLight color="#FFF8E0" intensity={3} distance={120} decay={1.2} />
+    <group ref={groupRef} position={[-8, -4, 0]} scale={[6, 6, 6]}>
+      <primitive object={cloned} />
     </group>
   )
 }
 
-function Earth() {
-  const meshRef = useRef<THREE.Mesh>(null)
-  const cloudRef = useRef<THREE.Mesh>(null)
-
-  useFrame(({ clock }) => {
-    if (meshRef.current) meshRef.current.rotation.y = clock.getElapsedTime() * 0.2
-    if (cloudRef.current) cloudRef.current.rotation.y = clock.getElapsedTime() * 0.25
-  })
-
-  return (
-    <group position={[10, 0, 0]}>
-      {/* Earth body */}
-      <mesh ref={meshRef}>
-        <sphereGeometry args={[0.6, 32, 32]} />
-        <meshStandardMaterial color="#1a6fa8" roughness={0.8} metalness={0.1} />
-      </mesh>
-      {/* Continent patches (simplified) */}
-      <mesh ref={cloudRef}>
-        <sphereGeometry args={[0.62, 32, 32]} />
-        <meshStandardMaterial
-          color="#2d8a3e"
-          transparent
-          opacity={0.35}
-          roughness={1}
-          wireframe={false}
-        />
-      </mesh>
-      {/* Atmosphere */}
-      <mesh>
-        <sphereGeometry args={[0.68, 32, 32]} />
-        <meshBasicMaterial color="#4fc3f7" transparent opacity={0.06} side={THREE.BackSide} />
-      </mesh>
-    </group>
-  )
+// Raw cluster position before Earth avoidance
+function getRawPosition(
+  i: number,
+  total: number,
+  missDistanceLunar: number,
+  timelineOffset: number
+): [number, number, number] {
+  const baseX = 2 + (i / Math.max(total - 1, 1)) * 20
+  const xJitter = (Math.sin(i * 127.1) * 0.5 + 0.5) * 2.4 - 1.2
+  const y = (Math.sin(i * 311.7) * 0.5 + 0.5) * 6 - 3 - missDistanceLunar / 30
+  const z = (Math.sin(i * 74.3) * 0.5 + 0.5) * 5 - 2.5
+  return [baseX + xJitter + timelineOffset, y, z]
 }
 
-function OrbitalRing({ radius }: { radius: number }) {
-  const points = useMemo(() => {
-    const pts: THREE.Vector3[] = []
-    for (let i = 0; i <= 128; i++) {
-      const angle = (i / 128) * Math.PI * 2
-      pts.push(new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius))
+// Apply Earth collision: hide if behind Earth, clamp if too close from the front
+function resolvePosition(
+  raw: [number, number, number]
+): { pos: [number, number, number]; hidden: boolean } {
+  const [ex, ey, ez] = EARTH_CENTER
+  const dx = raw[0] - ex
+  const dy = raw[1] - ey
+  const dz = raw[2] - ez
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+
+  // Behind Earth (x < Earth center X) and inside hide threshold → don't render
+  if (raw[0] < ex && dist < EARTH_HIDE_RADIUS) {
+    return { pos: raw, hidden: true }
+  }
+
+  // Too close from any direction → push outward from Earth center
+  if (dist < EARTH_CLAMP_RADIUS) {
+    const scale = EARTH_CLAMP_RADIUS / dist
+    return {
+      pos: [ex + dx * scale, ey + dy * scale, ez + dz * scale],
+      hidden: false,
     }
-    return pts
-  }, [radius])
+  }
 
-  const lineObj = useMemo(() => {
-    const geo = new THREE.BufferGeometry().setFromPoints(points)
-    const mat = new THREE.LineBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.06 })
-    return new THREE.Line(geo, mat)
-  }, [points])
-
-  return <primitive object={lineObj} />
+  return { pos: raw, hidden: false }
 }
 
 export default function SolarSystem({
   asteroids,
   selectedId,
   onSelectAsteroid,
-  flyToId,
-  onFlyComplete,
+  timelineOffset,
 }: SolarSystemProps) {
-  const { camera } = useThree()
-  const flyTarget = useRef<THREE.Vector3 | null>(null)
-  const flyingRef = useRef(false)
+  const sorted = useMemo(
+    () => [...asteroids].sort((a, b) => a.closeApproachDate.localeCompare(b.closeApproachDate)),
+    [asteroids]
+  )
 
-  // Set fly target when flyToId changes
-  useMemo(() => {
-    if (!flyToId) return
-    const target = asteroids.find((a) => a.id === flyToId)
-    if (!target) return
-    const x = Math.cos(target.orbitAngle) * target.orbitRadius
-    const z = Math.sin(target.orbitAngle) * target.orbitRadius
-    flyTarget.current = new THREE.Vector3(x + 1.5, 1.5, z + 1.5)
-    flyingRef.current = true
-  }, [flyToId, asteroids])
-
-  useFrame(() => {
-    if (!flyingRef.current || !flyTarget.current) return
-    camera.position.lerp(flyTarget.current, 0.05)
-    if (camera.position.distanceTo(flyTarget.current) < 0.1) {
-      flyingRef.current = false
-      flyTarget.current = null
-      onFlyComplete()
-    }
-  })
+  const resolved = useMemo(
+    () =>
+      sorted.map((asteroid, i) => {
+        const raw = getRawPosition(i, sorted.length, asteroid.missDistanceLunar, timelineOffset)
+        return resolvePosition(raw)
+      }),
+    [sorted, timelineOffset]
+  )
 
   return (
     <>
       <Stars radius={200} depth={60} count={6000} factor={4} saturation={0} fade speed={0.3} />
-      <ambientLight intensity={0.15} />
 
-      <Sun />
-      <Earth />
+      {/* Directional light from sun direction */}
+      <directionalLight
+        position={[15, 10, 5]}
+        intensity={3.5}
+        color="#FFF8E0"
+        castShadow
+      />
+      {/* Earthshine fill */}
+      <ambientLight color="#223344" intensity={0.25} />
 
-      {/* Earth orbit ring */}
-      <OrbitalRing radius={10} />
+      <SunModel />
+      <EarthModel />
 
-      {/* Asteroid orbit rings */}
-      {[8, 12, 16].map((r) => (
-        <OrbitalRing key={r} radius={r} />
-      ))}
-
-      {/* Asteroids */}
-      {asteroids.map((asteroid) => (
-        <AsteroidMesh
-          key={asteroid.id}
-          asteroid={asteroid}
-          isSelected={asteroid.id === selectedId}
-          onClick={() => onSelectAsteroid(asteroid)}
-        />
-      ))}
+      {sorted.map((asteroid, i) => {
+        const { pos, hidden } = resolved[i]
+        if (hidden) return null
+        return (
+          <AsteroidMesh
+            key={asteroid.id}
+            asteroid={asteroid}
+            isSelected={asteroid.id === selectedId}
+            onClick={() => onSelectAsteroid(asteroid)}
+            position={pos}
+          />
+        )
+      })}
     </>
   )
 }
