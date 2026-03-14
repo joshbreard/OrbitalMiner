@@ -53,11 +53,14 @@ function SunModel() {
 
 function EarthModel() {
   const { scene } = useGLTF('/earth.glb')
-  const groupRef = useRef<THREE.Group>(null)
+  const spinRef = useRef<THREE.Group>(null)
 
   const cloned = useMemo(() => {
     const clone = scene.clone()
-    // Disable raycast on all Earth meshes so they never block asteroid clicks
+    clone.position.set(0, 0, 0)
+    clone.rotation.set(0, 0, 0)
+    clone.scale.set(1, 1, 1)
+    clone.updateMatrixWorld(true)
     clone.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
         ;(obj as THREE.Mesh).raycast = () => {}
@@ -67,14 +70,14 @@ function EarthModel() {
   }, [scene])
 
   useFrame(() => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += 0.0008
-    }
+    if (spinRef.current) spinRef.current.rotation.y += 0.0008
   })
 
   return (
-    <group ref={groupRef} position={[-8, -4, 0]} scale={[6, 6, 6]}>
-      <primitive object={cloned} />
+    <group position={[-8, -4, 0]} scale={[6, 6, 6]}>
+      <group ref={spinRef}>
+        <primitive object={cloned} />
+      </group>
     </group>
   )
 }
